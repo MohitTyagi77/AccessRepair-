@@ -1,0 +1,37 @@
+// Prisma schema for AccessRepair
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Scan {
+  id         Int         @id @default(autoincrement())
+  url        String
+  score      Float
+  totalElements Int      @default(0)
+  createdAt  DateTime    @default(now())
+  violations Violation[]
+}
+
+model Violation {
+  id            Int      @id @default(autoincrement())
+  scanId        Int
+  scan          Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  ruleId        String
+  severity      String   // critical, serious, moderate, minor
+  description   String
+  html          String
+  selector      String
+  helpUrl       String   @default("")
+  priorityScore Float    @default(0)
+  // AI Fix fields
+  fixedHtml     String   @default("")
+  explanation   String   @default("")
+  confidence    Float    @default(0)
+  rootCause     String   @default("")
+  affectedUsers String   @default("")
+}
