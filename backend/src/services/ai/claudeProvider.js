@@ -5,7 +5,7 @@
  * Requires: npm install @anthropic-ai/sdk
  * Env vars: ANTHROPIC_API_KEY, CLAUDE_MODEL (default: claude-sonnet-4-20250514)
  */
-const { AIProvider } = require('./aiProvider');
+const { AIProvider, withTimeout } = require('./aiProvider');
 
 class ClaudeProvider extends AIProvider {
     constructor() {
@@ -34,12 +34,12 @@ class ClaudeProvider extends AIProvider {
         try {
             const prompt = this.buildFixPrompt(violations);
 
-            const message = await this.client.messages.create({
+            const message = await withTimeout(this.client.messages.create({
                 model: this.model,
                 max_tokens: 4096,
                 system: 'You are an expert web accessibility specialist. Return only valid JSON.',
                 messages: [{ role: 'user', content: prompt }],
-            });
+            }), 30000, 'Claude fix generation');
 
             const responseText = message.content[0]?.text || '[]';
             return this.parseFixes(responseText, violations.length);
@@ -57,12 +57,12 @@ class ClaudeProvider extends AIProvider {
         try {
             const systemPrompt = this.buildChatSystemPrompt(scanContext);
 
-            const message = await this.client.messages.create({
+            const message = await withTimeout(this.client.messages.create({
                 model: this.model,
                 max_tokens: 2048,
                 system: systemPrompt,
                 messages: messages.map(m => ({ role: m.role, content: m.content })),
-            });
+            }), 30000, 'Claude chat');
 
             return message.content[0]?.text || 'No response generated.';
         } catch (error) {

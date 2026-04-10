@@ -13,6 +13,8 @@ const { AxeBuilder } = require('@axe-core/playwright');
  */
 async function scanUrl(url, onProgress = () => { }) {
     let browser = null;
+    let context = null;
+    let page = null;
 
     try {
         onProgress('LAUNCHING', 'Launching browser...', 10);
@@ -21,37 +23,31 @@ async function scanUrl(url, onProgress = () => { }) {
             args: ['--no-sandbox', '--disable-setuid-sandbox'],
         });
 
-        const context = await browser.newContext({
+        context = await browser.newContext({
             viewport: { width: 1280, height: 720 },
             userAgent: 'AccessRepair/1.0 Accessibility Scanner',
         });
 
-        const page = await context.newPage();
+        page = await context.newPage();
 
         onProgress('NAVIGATING', `Navigating to ${url}...`, 20);
 
-        // Navigate with timeout and wait for load
         await page.goto(url, {
-            waitUntil: 'networkidle',
+            waitUntil: 'domcontentloaded',
             timeout: 30000,
         });
 
         onProgress('WAITING', 'Waiting for page to stabilize...', 40);
-
-        // Extra wait for JS-heavy sites
-        await page.waitForTimeout(2000);
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => null);
+        await page.waitForTimeout(1000);
 
         onProgress('SCANNING', 'Running accessibility analysis...', 50);
 
-        // Run axe-core analysis
         const results = await new AxeBuilder({ page })
             .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'])
             .analyze();
 
         onProgress('SCANNING', 'Analysis complete', 70);
-
-        await browser.close();
-        browser = null;
 
         return {
             violations: results.violations.map(v => ({
@@ -71,9 +67,6 @@ async function scanUrl(url, onProgress = () => { }) {
             totalElements: results.passes.length + results.violations.reduce((acc, v) => acc + v.nodes.length, 0) + results.incomplete.length,
         };
     } catch (error) {
-        if (browser) await browser.close();
-
-        // Provide user-friendly error messages
         if (error.message.includes('net::ERR_NAME_NOT_RESOLVED')) {
             throw new Error(`Could not resolve URL: ${url}. Please check the URL and try again.`);
         }
@@ -85,6 +78,10 @@ async function scanUrl(url, onProgress = () => { }) {
         }
 
         throw new Error(`Scan failed: ${error.message}`);
+    } finally {
+        if (page) await page.close().catch(() => null);
+        if (context) await context.close().catch(() => null);
+        if (browser) await browser.close().catch(() => null);
     }
 }
 

@@ -77,23 +77,33 @@ class AIProvider {
      */
     parseFixes(responseText, expectedCount) {
         try {
-            // Strip markdown code fences if present
-            let cleaned = responseText.trim();
+            let cleaned = (responseText || '').trim();
             cleaned = cleaned.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '');
 
             const parsed = JSON.parse(cleaned);
             const fixes = Array.isArray(parsed) ? parsed : [parsed];
 
-            return fixes.map(fix => ({
-                fixedHtml: fix.fixedHtml || fix.fixed_html || '',
-                explanation: fix.explanation || '',
+            const normalized = fixes.slice(0, expectedCount).map(fix => ({
+                fixedHtml: String(fix.fixedHtml || fix.fixed_html || '').slice(0, 20000),
+                explanation: String(fix.explanation || '').slice(0, 4000),
                 confidence: Math.max(0, Math.min(1, parseFloat(fix.confidence) || 0.5)),
-                rootCause: fix.rootCause || fix.root_cause || 'Unknown',
-                affectedUsers: fix.affectedUsers || fix.affected_users || 'General users',
+                rootCause: String(fix.rootCause || fix.root_cause || 'Unknown').slice(0, 500),
+                affectedUsers: String(fix.affectedUsers || fix.affected_users || 'General users').slice(0, 500),
             }));
+
+            while (normalized.length < expectedCount) {
+                normalized.push({
+                    fixedHtml: '',
+                    explanation: 'AI did not return a fix for this violation.',
+                    confidence: 0,
+                    rootCause: 'Missing response item',
+                    affectedUsers: 'Unknown',
+                });
+            }
+
+            return normalized;
         } catch (err) {
             console.warn('Failed to parse AI fix response:', err.message);
-            // Return empty fixes for each violation
             return Array.from({ length: expectedCount }, () => ({
                 fixedHtml: '',
                 explanation: 'AI could not generate a fix for this violation.',
@@ -105,6 +115,16 @@ class AIProvider {
     }
 }
 
+
+
+function withTimeout(promise, timeoutMs, label = 'operation') {
+    let timer;
+    const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    });
+
+    return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
 /**
  * Factory: get the configured AI provider instance
  * Set AI_PROVIDER env var to: 'gemini' (default), 'openai', or 'claude'
@@ -126,4 +146,4 @@ function getAIProvider() {
     }
 }
 
-module.exports = { AIProvider, getAIProvider };
+module.exports = { AIProvider, getAIProvider, withTimeout };

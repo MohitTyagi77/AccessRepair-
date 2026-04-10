@@ -7,6 +7,7 @@ const { calculateScore } = require('../services/scoring');
 const { prioritizeViolations } = require('../services/priorityEngine');
 const { getAIProvider } = require('../services/ai/aiProvider');
 const { sanitize } = require('../utils/htmlSanitizer');
+const { validateScanUrl } = require('../utils/urlSafety');
 const { SCAN_STAGES } = require('../../../shared/constants');
 
 /**
@@ -16,16 +17,16 @@ const { SCAN_STAGES } = require('../../../shared/constants');
 async function handleScan(req, res) {
     const { url } = req.body;
 
-    if (!url) {
+    if (!url || typeof url !== 'string') {
         return res.status(400).json({ error: 'URL is required' });
     }
 
-    // Validate URL format
-    try {
-        new URL(url);
-    } catch {
-        return res.status(400).json({ error: 'Invalid URL format. Please include http:// or https://' });
+    const validation = await validateScanUrl(url.trim());
+    if (!validation.valid) {
+        return res.status(400).json({ error: validation.reason });
     }
+
+    const safeUrl = validation.normalizedUrl;
 
     // Check if client wants SSE streaming
     const useSSE = req.headers.accept === 'text/event-stream';
@@ -43,7 +44,7 @@ async function handleScan(req, res) {
         };
 
         try {
-            await runScanPipeline(req, res, url, sendProgress, (result) => {
+            await runScanPipeline(req, safeUrl, sendProgress, (result) => {
                 res.write(`data: ${JSON.stringify({ type: 'result', data: result })}\n\n`);
                 res.end();
             });
@@ -54,7 +55,7 @@ async function handleScan(req, res) {
     } else {
         // Standard JSON response
         try {
-            const result = await runScanPipeline(req, res, url);
+            const result = await runScanPipeline(req, safeUrl);
             res.json(result);
         } catch (error) {
             console.error('Scan error:', error);
@@ -66,7 +67,7 @@ async function handleScan(req, res) {
 /**
  * Core scan pipeline
  */
-async function runScanPipeline(req, res, url, onProgress = () => { }, onComplete = null) {
+async function runScanPipeline(req, url, onProgress = () => { }, onComplete = null) {
     const prisma = req.app.locals.prisma;
 
     // Step 1: Scan with Playwright + axe-core
@@ -202,10 +203,15 @@ async function handleHistory(req, res) {
  * Handle GET /api/scan/:id
  */
 async function handleGetScan(req, res) {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id) || id <= 0) {
+        return res.status(400).json({ error: 'Scan id must be a positive integer' });
+    }
+
     try {
         const prisma = req.app.locals.prisma;
         const scan = await prisma.scan.findUnique({
-            where: { id: parseInt(req.params.id) },
+            where: { id },
             include: {
                 violations: {
                     orderBy: { priorityScore: 'desc' },

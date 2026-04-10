@@ -3,7 +3,7 @@
  * Uses Google's Generative AI SDK (@google/generative-ai)
  */
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { AIProvider } = require('./aiProvider');
+const { AIProvider, withTimeout } = require('./aiProvider');
 
 // Simple in-memory cache for AI responses
 const fixCache = new Map();
@@ -61,7 +61,7 @@ class GeminiProvider extends AIProvider {
             const model = this.genAI.getGenerativeModel({ model: this.model });
             const prompt = this.buildFixPrompt(violations);
 
-            const result = await retryWithBackoff(() => model.generateContent(prompt));
+            const result = await withTimeout(retryWithBackoff(() => model.generateContent(prompt)), 45000, 'Gemini fix generation');
             const responseText = result.response.text();
             const fixes = this.parseFixes(responseText, violations.length);
 
@@ -99,7 +99,7 @@ class GeminiProvider extends AIProvider {
             });
 
             const lastMessage = messages[messages.length - 1];
-            const result = await retryWithBackoff(() => chat.sendMessage(lastMessage.content));
+            const result = await withTimeout(retryWithBackoff(() => chat.sendMessage(lastMessage.content)), 45000, 'Gemini chat');
             return result.response.text();
         } catch (error) {
             console.error('Gemini chat error:', error.message);
