@@ -9,12 +9,14 @@ datasource db {
 }
 
 model Scan {
-  id         Int         @id @default(autoincrement())
-  url        String
-  score      Float
-  totalElements Int      @default(0)
-  createdAt  DateTime    @default(now())
-  violations Violation[]
+  id            Int         @id @default(autoincrement())
+  url           String
+  score         Float
+  totalElements Int         @default(0)
+  createdAt     DateTime    @default(now())
+  violations    Violation[]
+
+  @@index([createdAt])
 }
 
 model Violation {
@@ -34,4 +36,9 @@ model Violation {
   confidence    Float    @default(0)
   rootCause     String   @default("")
   affectedUsers String   @default("")
+
+  @@index([scanId])
+  @@index([scanId, priorityScore])
+  @@index([ruleId])
 }
+

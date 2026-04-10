@@ -5,7 +5,7 @@
  * Requires: npm install openai
  * Env vars: OPENAI_API_KEY, OPENAI_MODEL (default: gpt-4o)
  */
-const { AIProvider } = require('./aiProvider');
+const { AIProvider, withTimeout } = require('./aiProvider');
 
 class OpenAIProvider extends AIProvider {
     constructor() {
@@ -34,7 +34,7 @@ class OpenAIProvider extends AIProvider {
         try {
             const prompt = this.buildFixPrompt(violations);
 
-            const completion = await this.client.chat.completions.create({
+            const completion = await withTimeout(this.client.chat.completions.create({
                 model: this.model,
                 messages: [
                     { role: 'system', content: 'You are an expert web accessibility specialist. Return only valid JSON.' },
@@ -42,7 +42,7 @@ class OpenAIProvider extends AIProvider {
                 ],
                 temperature: 0.3,
                 max_tokens: 4096,
-            });
+            }), 30000, 'OpenAI fix generation');
 
             const responseText = completion.choices[0]?.message?.content || '[]';
             return this.parseFixes(responseText, violations.length);
@@ -60,7 +60,7 @@ class OpenAIProvider extends AIProvider {
         try {
             const systemPrompt = this.buildChatSystemPrompt(scanContext);
 
-            const completion = await this.client.chat.completions.create({
+            const completion = await withTimeout(this.client.chat.completions.create({
                 model: this.model,
                 messages: [
                     { role: 'system', content: systemPrompt },
@@ -68,7 +68,7 @@ class OpenAIProvider extends AIProvider {
                 ],
                 temperature: 0.7,
                 max_tokens: 2048,
-            });
+            }), 30000, 'OpenAI chat');
 
             return completion.choices[0]?.message?.content || 'No response generated.';
         } catch (error) {
