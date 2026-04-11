@@ -5,7 +5,8 @@
  * Requires: npm install openai
  * Env vars: OPENAI_API_KEY, OPENAI_MODEL (default: gpt-4o)
  */
-const { AIProvider } = require('./aiProvider');
+const { AIProvider, withTimeout } = require('./aiProvider');
+const logger = require('../../utils/logger');
 
 class OpenAIProvider extends AIProvider {
     constructor() {
@@ -19,10 +20,10 @@ class OpenAIProvider extends AIProvider {
                 const OpenAI = require('openai');
                 this.client = new OpenAI({ apiKey: this.apiKey });
             } catch (err) {
-                console.warn('⚠️  openai package not installed. Run: npm install openai');
+                logger.warn('⚠️  openai package not installed. Run: npm install openai');
             }
         } else {
-            console.warn('⚠️  OPENAI_API_KEY not set — OpenAI provider unavailable');
+            logger.warn('⚠️  OPENAI_API_KEY not set — OpenAI provider unavailable');
         }
     }
 
@@ -34,7 +35,7 @@ class OpenAIProvider extends AIProvider {
         try {
             const prompt = this.buildFixPrompt(violations);
 
-            const completion = await this.client.chat.completions.create({
+            const completion = await withTimeout(this.client.chat.completions.create({
                 model: this.model,
                 messages: [
                     { role: 'system', content: 'You are an expert web accessibility specialist. Return only valid JSON.' },
@@ -42,12 +43,12 @@ class OpenAIProvider extends AIProvider {
                 ],
                 temperature: 0.3,
                 max_tokens: 4096,
-            });
+            }), 30000, 'OpenAI fix generation');
 
             const responseText = completion.choices[0]?.message?.content || '[]';
             return this.parseFixes(responseText, violations.length);
         } catch (error) {
-            console.error('OpenAI fix generation error:', error.message);
+            logger.error('OpenAI fix generation error:', error.message);
             return this._placeholderFixes(violations);
         }
     }
@@ -60,7 +61,7 @@ class OpenAIProvider extends AIProvider {
         try {
             const systemPrompt = this.buildChatSystemPrompt(scanContext);
 
-            const completion = await this.client.chat.completions.create({
+            const completion = await withTimeout(this.client.chat.completions.create({
                 model: this.model,
                 messages: [
                     { role: 'system', content: systemPrompt },
@@ -68,11 +69,11 @@ class OpenAIProvider extends AIProvider {
                 ],
                 temperature: 0.7,
                 max_tokens: 2048,
-            });
+            }), 30000, 'OpenAI chat');
 
             return completion.choices[0]?.message?.content || 'No response generated.';
         } catch (error) {
-            console.error('OpenAI chat error:', error.message);
+            logger.error('OpenAI chat error:', error.message);
             return `Sorry, I encountered an error: ${error.message}`;
         }
     }

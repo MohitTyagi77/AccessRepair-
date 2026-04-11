@@ -1,18 +1,29 @@
 /**
  * AccessRepair - Scan Service
- * Launches Playwright, navigates to URL, runs axe-core analysis
+ * Launches Playwright, navigates to URL, runs axe-core analysis.
  */
 const { chromium } = require('playwright');
 const { AxeBuilder } = require('@axe-core/playwright');
+const { validateScanUrl } = require('../utils/urlSafety');
+const logger = require('../utils/logger');
+
+/** @typedef {(stage: string, message: string, progress: number) => void} ProgressCallback */
 
 /**
- * Scan a URL for accessibility violations using Playwright + axe-core
- * @param {string} url - The URL to scan
- * @param {function} onProgress - SSE progress callback
- * @returns {Promise<Object>} - axe-core results
+ * Scan a URL for accessibility violations using Playwright + axe-core.
+ *
+ * Key decisions:
+ * - Keep browser/context/page explicit to ensure deterministic cleanup.
+ * - Validate the final URL after navigation to guard against redirects to internal hosts.
+ *
+ * @param {string} url
+ * @param {ProgressCallback} [onProgress]
+ * @returns {Promise<{violations: Array, passes: number, incomplete: number, totalElements: number}>}
  */
 async function scanUrl(url, onProgress = () => { }) {
     let browser = null;
+    let context = null;
+    let page = null;
 
     try {
         onProgress('LAUNCHING', 'Launching browser...', 10);
@@ -21,37 +32,33 @@ async function scanUrl(url, onProgress = () => { }) {
             args: ['--no-sandbox', '--disable-setuid-sandbox'],
         });
 
-        const context = await browser.newContext({
+        context = await browser.newContext({
             viewport: { width: 1280, height: 720 },
             userAgent: 'AccessRepair/1.0 Accessibility Scanner',
         });
 
-        const page = await context.newPage();
-
+        page = await context.newPage();
         onProgress('NAVIGATING', `Navigating to ${url}...`, 20);
 
-        // Navigate with timeout and wait for load
-        await page.goto(url, {
-            waitUntil: 'networkidle',
-            timeout: 30000,
-        });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+        // Prevent scanning if navigation redirects into blocked/private ranges.
+        const finalUrl = page.url();
+        const redirectValidation = await validateScanUrl(finalUrl);
+        if (!redirectValidation.valid) {
+            throw new Error(`Navigation blocked by URL safety policy: ${redirectValidation.reason}`);
+        }
 
         onProgress('WAITING', 'Waiting for page to stabilize...', 40);
-
-        // Extra wait for JS-heavy sites
-        await page.waitForTimeout(2000);
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => null);
+        await page.waitForTimeout(1000);
 
         onProgress('SCANNING', 'Running accessibility analysis...', 50);
-
-        // Run axe-core analysis
         const results = await new AxeBuilder({ page })
             .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'])
             .analyze();
 
         onProgress('SCANNING', 'Analysis complete', 70);
-
-        await browser.close();
-        browser = null;
 
         return {
             violations: results.violations.map(v => ({
@@ -68,23 +75,29 @@ async function scanUrl(url, onProgress = () => { }) {
             })),
             passes: results.passes.length,
             incomplete: results.incomplete.length,
-            totalElements: results.passes.length + results.violations.reduce((acc, v) => acc + v.nodes.length, 0) + results.incomplete.length,
+            totalElements:
+                results.passes.length +
+                results.violations.reduce((acc, v) => acc + v.nodes.length, 0) +
+                results.incomplete.length,
         };
     } catch (error) {
-        if (browser) await browser.close();
+        logger.error('Scan execution failed', { url, error: error.message });
 
-        // Provide user-friendly error messages
-        if (error.message.includes('net::ERR_NAME_NOT_RESOLVED')) {
+        if (error.message.includes('ERR_NAME_NOT_RESOLVED')) {
             throw new Error(`Could not resolve URL: ${url}. Please check the URL and try again.`);
         }
         if (error.message.includes('Timeout')) {
             throw new Error(`Page took too long to load: ${url}. The site may be slow or blocking automated access.`);
         }
-        if (error.message.includes('net::ERR_CONNECTION_REFUSED')) {
+        if (error.message.includes('ERR_CONNECTION_REFUSED')) {
             throw new Error(`Connection refused for ${url}. The site may be down.`);
         }
 
         throw new Error(`Scan failed: ${error.message}`);
+    } finally {
+        if (page) await page.close().catch(() => null);
+        if (context) await context.close().catch(() => null);
+        if (browser) await browser.close().catch(() => null);
     }
 }
 

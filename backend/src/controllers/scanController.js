@@ -7,6 +7,8 @@ const { calculateScore } = require('../services/scoring');
 const { prioritizeViolations } = require('../services/priorityEngine');
 const { getAIProvider } = require('../services/ai/aiProvider');
 const { sanitize } = require('../utils/htmlSanitizer');
+const { validateScanUrl } = require('../utils/urlSafety');
+const logger = require('../utils/logger');
 const { SCAN_STAGES } = require('../../../shared/constants');
 
 /**
@@ -14,24 +16,30 @@ const { SCAN_STAGES } = require('../../../shared/constants');
  * Supports SSE streaming for real-time progress updates
  */
 async function handleScan(req, res) {
-    const { url } = req.body;
+    const { url } = req.body || {};
 
-    if (!url) {
+    if (!url || typeof url !== 'string') {
         return res.status(400).json({ error: 'URL is required' });
     }
 
-    // Validate URL format
+    let safeUrl;
     try {
-        new URL(url);
-    } catch {
-        return res.status(400).json({ error: 'Invalid URL format. Please include http:// or https://' });
+        const validation = await validateScanUrl(url.trim());
+        if (!validation.valid) {
+            logger.warn('Rejected scan URL', { reason: validation.reason, url });
+            return res.status(400).json({ error: validation.reason });
+        }
+
+        safeUrl = validation.normalizedUrl;
+    } catch (error) {
+        logger.error('Unexpected URL validation failure', { error: error.message });
+        return res.status(500).json({ error: 'URL validation failed' });
     }
 
-    // Check if client wants SSE streaming
-    const useSSE = req.headers.accept === 'text/event-stream';
+    const acceptHeader = req.headers.accept || '';
+    const useSSE = acceptHeader.includes('text/event-stream');
 
     if (useSSE) {
-        // Setup SSE headers
         res.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
@@ -43,38 +51,39 @@ async function handleScan(req, res) {
         };
 
         try {
-            await runScanPipeline(req, res, url, sendProgress, (result) => {
+            await runScanPipeline(req, safeUrl, sendProgress, (result) => {
                 res.write(`data: ${JSON.stringify({ type: 'result', data: result })}\n\n`);
                 res.end();
             });
         } catch (error) {
+            logger.error('SSE scan pipeline failed', { url: safeUrl, error: error.message });
             res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
             res.end();
         }
-    } else {
-        // Standard JSON response
-        try {
-            const result = await runScanPipeline(req, res, url);
-            res.json(result);
-        } catch (error) {
-            console.error('Scan error:', error);
-            res.status(500).json({ error: error.message });
-        }
+        return;
+    }
+
+    try {
+        const result = await runScanPipeline(req, safeUrl);
+        res.json(result);
+    } catch (error) {
+        logger.error('Scan pipeline failed', { url: safeUrl, error: error.message });
+        res.status(500).json({ error: error.message });
     }
 }
 
 /**
  * Core scan pipeline
  */
-async function runScanPipeline(req, res, url, onProgress = () => { }, onComplete = null) {
+async function runScanPipeline(req, url, onProgress = () => { }, onComplete = null) {
     const prisma = req.app.locals.prisma;
 
-    // Step 1: Scan with Playwright + axe-core
+    onProgress('LAUNCHING', SCAN_STAGES.LAUNCHING, 5);
     const scanResults = await scanUrl(url, onProgress);
 
-    // Step 2: Flatten violations (one entry per node)
     onProgress('SCORING', SCAN_STAGES.SCORING, 70);
     const flatViolations = [];
+
     for (const violation of scanResults.violations) {
         for (const node of violation.nodes) {
             flatViolations.push({
@@ -90,17 +99,14 @@ async function runScanPipeline(req, res, url, onProgress = () => { }, onComplete
         }
     }
 
-    // Step 3: Calculate score
     const { score, breakdown } = calculateScore(
         flatViolations.map(v => ({ severity: v.severity, nodeCount: 1 })),
         scanResults.totalElements
     );
 
-    // Step 4: Prioritize violations
     onProgress('PRIORITIZING', SCAN_STAGES.PRIORITIZING, 75);
     const prioritized = prioritizeViolations(flatViolations);
 
-    // Step 5: Generate AI fixes (batch, max 10 at a time)
     onProgress('AI_FIXING', SCAN_STAGES.AI_FIXING, 80);
     const aiProvider = getAIProvider();
     const topViolations = prioritized.slice(0, 10);
@@ -111,23 +117,25 @@ async function runScanPipeline(req, res, url, onProgress = () => { }, onComplete
     }));
 
     let fixes = [];
+
     try {
         fixes = await aiProvider.generateFixes(sanitizedForAI);
-    } catch (err) {
-        console.error('AI fix error:', err.message);
+    } catch (error) {
+        logger.error('AI fix generation failed, returning placeholders', { error: error.message });
         fixes = topViolations.map(() => ({
-            fixedHtml: '', explanation: 'AI service unavailable', confidence: 0,
-            rootCause: 'Unknown', affectedUsers: 'Unknown',
+            fixedHtml: '',
+            explanation: 'AI service unavailable',
+            confidence: 0,
+            rootCause: 'Unknown',
+            affectedUsers: 'Unknown',
         }));
     }
 
-    // Merge fixes into violations
-    const violationsWithFixes = prioritized.map((v, i) => ({
-        ...v,
-        fix: i < fixes.length ? fixes[i] : null,
+    const violationsWithFixes = prioritized.map((violation, index) => ({
+        ...violation,
+        fix: fixes[index] || null,
     }));
 
-    // Step 6: Save to database
     onProgress('SAVING', SCAN_STAGES.SAVING, 90);
     const savedScan = await prisma.scan.create({
         data: {
@@ -169,48 +177,38 @@ async function runScanPipeline(req, res, url, onProgress = () => { }, onComplete
         createdAt: savedScan.createdAt,
     };
 
-    if (onComplete) {
-        onComplete(result);
-    }
+    if (onComplete) onComplete(result);
 
     return result;
 }
 
-/**
- * Handle GET /api/history
- */
 async function handleHistory(req, res) {
     try {
         const prisma = req.app.locals.prisma;
         const scans = await prisma.scan.findMany({
             orderBy: { createdAt: 'desc' },
             take: 50,
-            include: {
-                violations: {
-                    orderBy: { priorityScore: 'desc' },
-                },
-            },
+            include: { violations: { orderBy: { priorityScore: 'desc' } } },
         });
+
         res.json(scans);
     } catch (error) {
-        console.error('History error:', error);
+        logger.error('History endpoint failed', { error: error.message });
         res.status(500).json({ error: 'Failed to fetch scan history' });
     }
 }
 
-/**
- * Handle GET /api/scan/:id
- */
 async function handleGetScan(req, res) {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id) || id <= 0) {
+        return res.status(400).json({ error: 'Scan id must be a positive integer' });
+    }
+
     try {
         const prisma = req.app.locals.prisma;
         const scan = await prisma.scan.findUnique({
-            where: { id: parseInt(req.params.id) },
-            include: {
-                violations: {
-                    orderBy: { priorityScore: 'desc' },
-                },
-            },
+            where: { id },
+            include: { violations: { orderBy: { priorityScore: 'desc' } } },
         });
 
         if (!scan) {
@@ -219,16 +217,13 @@ async function handleGetScan(req, res) {
 
         res.json(scan);
     } catch (error) {
-        console.error('Get scan error:', error);
+        logger.error('Scan lookup failed', { id, error: error.message });
         res.status(500).json({ error: 'Failed to fetch scan' });
     }
 }
 
-/**
- * Handle POST /api/chat
- */
 async function handleChat(req, res) {
-    const { messages, scanContext } = req.body;
+    const { messages, scanContext } = req.body || {};
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
         return res.status(400).json({ error: 'Messages array is required' });
@@ -239,8 +234,8 @@ async function handleChat(req, res) {
         const reply = await aiProvider.chat(messages, scanContext || null);
         res.json({ reply });
     } catch (error) {
-        console.error('Chat error:', error);
-        res.status(500).json({ error: 'AI chat failed: ' + error.message });
+        logger.error('Chat endpoint failed', { error: error.message });
+        res.status(500).json({ error: `AI chat failed: ${error.message}` });
     }
 }
 

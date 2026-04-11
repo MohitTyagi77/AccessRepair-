@@ -5,7 +5,8 @@
  * Requires: npm install @anthropic-ai/sdk
  * Env vars: ANTHROPIC_API_KEY, CLAUDE_MODEL (default: claude-sonnet-4-20250514)
  */
-const { AIProvider } = require('./aiProvider');
+const { AIProvider, withTimeout } = require('./aiProvider');
+const logger = require('../../utils/logger');
 
 class ClaudeProvider extends AIProvider {
     constructor() {
@@ -19,10 +20,10 @@ class ClaudeProvider extends AIProvider {
                 const Anthropic = require('@anthropic-ai/sdk');
                 this.client = new Anthropic({ apiKey: this.apiKey });
             } catch (err) {
-                console.warn('⚠️  @anthropic-ai/sdk package not installed. Run: npm install @anthropic-ai/sdk');
+                logger.warn('⚠️  @anthropic-ai/sdk package not installed. Run: npm install @anthropic-ai/sdk');
             }
         } else {
-            console.warn('⚠️  ANTHROPIC_API_KEY not set — Claude provider unavailable');
+            logger.warn('⚠️  ANTHROPIC_API_KEY not set — Claude provider unavailable');
         }
     }
 
@@ -34,17 +35,17 @@ class ClaudeProvider extends AIProvider {
         try {
             const prompt = this.buildFixPrompt(violations);
 
-            const message = await this.client.messages.create({
+            const message = await withTimeout(this.client.messages.create({
                 model: this.model,
                 max_tokens: 4096,
                 system: 'You are an expert web accessibility specialist. Return only valid JSON.',
                 messages: [{ role: 'user', content: prompt }],
-            });
+            }), 30000, 'Claude fix generation');
 
             const responseText = message.content[0]?.text || '[]';
             return this.parseFixes(responseText, violations.length);
         } catch (error) {
-            console.error('Claude fix generation error:', error.message);
+            logger.error('Claude fix generation error:', error.message);
             return this._placeholderFixes(violations);
         }
     }
@@ -57,16 +58,16 @@ class ClaudeProvider extends AIProvider {
         try {
             const systemPrompt = this.buildChatSystemPrompt(scanContext);
 
-            const message = await this.client.messages.create({
+            const message = await withTimeout(this.client.messages.create({
                 model: this.model,
                 max_tokens: 2048,
                 system: systemPrompt,
                 messages: messages.map(m => ({ role: m.role, content: m.content })),
-            });
+            }), 30000, 'Claude chat');
 
             return message.content[0]?.text || 'No response generated.';
         } catch (error) {
-            console.error('Claude chat error:', error.message);
+            logger.error('Claude chat error:', error.message);
             return `Sorry, I encountered an error: ${error.message}`;
         }
     }

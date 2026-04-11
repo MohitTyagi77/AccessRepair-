@@ -3,7 +3,8 @@
  * Uses Google's Generative AI SDK (@google/generative-ai)
  */
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { AIProvider } = require('./aiProvider');
+const { AIProvider, withTimeout } = require('./aiProvider');
+const logger = require('../../utils/logger');
 
 // Simple in-memory cache for AI responses
 const fixCache = new Map();
@@ -16,7 +17,7 @@ async function retryWithBackoff(fn, retries = 5, baseDelay = 10000) {
         } catch (error) {
             if (error.status === 429 || error.message.includes('429') || error.message.includes('Quota') || error.message.includes('Retry')) {
                 const delay = baseDelay * Math.pow(2, i);
-                console.log(`\n    ⏳ API Rate limit hit. Retrying in ${delay / 1000}s...`);
+                logger.warn('API rate limit hit, retrying', { delayMs: delay });
                 await new Promise(res => setTimeout(res, delay));
             } else {
                 throw error;
@@ -36,7 +37,7 @@ class GeminiProvider extends AIProvider {
             this.genAI = new GoogleGenerativeAI(this.apiKey);
         } else {
             this.genAI = null;
-            console.warn('⚠️  GEMINI_API_KEY not set — AI features will return placeholder responses');
+            logger.warn('⚠️  GEMINI_API_KEY not set — AI features will return placeholder responses');
         }
     }
 
@@ -61,7 +62,7 @@ class GeminiProvider extends AIProvider {
             const model = this.genAI.getGenerativeModel({ model: this.model });
             const prompt = this.buildFixPrompt(violations);
 
-            const result = await retryWithBackoff(() => model.generateContent(prompt));
+            const result = await withTimeout(retryWithBackoff(() => model.generateContent(prompt)), 45000, 'Gemini fix generation');
             const responseText = result.response.text();
             const fixes = this.parseFixes(responseText, violations.length);
 
@@ -70,7 +71,7 @@ class GeminiProvider extends AIProvider {
 
             return fixes;
         } catch (error) {
-            console.error('Gemini fix generation error:', error.message);
+            logger.error('Gemini fix generation error:', error.message);
             return this._placeholderFixes(violations, `AI Generation failed: ${error.message}`);
         }
     }
@@ -99,10 +100,10 @@ class GeminiProvider extends AIProvider {
             });
 
             const lastMessage = messages[messages.length - 1];
-            const result = await retryWithBackoff(() => chat.sendMessage(lastMessage.content));
+            const result = await withTimeout(retryWithBackoff(() => chat.sendMessage(lastMessage.content)), 45000, 'Gemini chat');
             return result.response.text();
         } catch (error) {
-            console.error('Gemini chat error:', error.message);
+            logger.error('Gemini chat error:', error.message);
             return `Sorry, I encountered an error: ${error.message}`;
         }
     }
