@@ -6,6 +6,14 @@
 ![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-green.svg)
 ![React](https://img.shields.io/badge/react-19.0.0-61dafb.svg)
 
+## 📸 Screenshots
+
+### Homepage — AI-Powered Accessibility Auditor
+![AccessRepair Homepage](docs/screenshots/homepage.png)
+
+### Feature Highlights
+![AccessRepair Features](docs/screenshots/features.png)
+
 ## 🚀 Features
 
 - **Deep Scanning**: WCAG 2.1 AA compliance scans using Playwright + axe-core.
@@ -30,8 +38,8 @@
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/YOUR_USERNAME/accessrepair.git
-cd accessrepair
+git clone https://github.com/MohitTyagi77/AccessRepair-.git
+cd AccessRepair-
 ```
 
 ### 2. Install dependencies
@@ -40,7 +48,7 @@ npm run install:all
 ```
 
 ### 3. Configure environment variables
-Create a `.env` file in the root or in `backend/`:
+Create a `.env` file in `backend/`:
 ```env
 # AI Configuration
 AI_PROVIDER=gemini # or 'openai', 'claude'
@@ -104,3 +112,4 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 ---
 Built with ❤️ for a more inclusive web.
+
